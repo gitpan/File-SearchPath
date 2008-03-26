@@ -11,7 +11,10 @@ File::SearchPath - Search for a file in an environment variable path
   $file = searchpath( 'libperl.a', env => 'LD_LIBRARY_PATH' );
   $file = searchpath( 'my.cfg', env => 'CFG_DIR', subdir => 'ME' );
 
-  $file = searcpath( 'ls', $ENV{PATH} );
+  $path = searchpath( $file, env => 'PATH', exe => 1 );
+  $path = searchpath( $file, env => 'PATH', dir => 1 );
+
+  $file = searchpath( 'ls', $ENV{PATH} );
 
   $exe = searchpath( 'ls' );
 
@@ -32,8 +35,9 @@ use base qw/ Exporter /;
 use vars qw/ $VERSION @EXPORT_OK /;
 
 use File::Spec;
+use Config;
 
-$VERSION = sprintf("%d.%02d", q$Revision: 0.2 $ =~ /(\d+)\.(\d+)/);
+$VERSION = '0.03';
 
 @EXPORT_OK = qw( searchpath );
 
@@ -52,8 +56,8 @@ can include directory specifications.
   $path = searchpath( $file );
   @matches = searchpath( $file );
 
-If a second argument is provided, it is assumed to be (specifically)
-a colon-separated path like variable. This interface is provided for
+If a second argument is provided, it is assumed to be
+a path like variable. This interface is provided for
 backwards compatibility with C<File::SearchPath> version 0.01. It is not
 as portable as specifying the name of the environment variable. Note also
 that no specific attempt will be made to check whether the file is
@@ -83,7 +87,14 @@ contains a blank string, the current directory will be assumed.
 
 If true, only executable files will be located in the search path.
 If $PATH is being searched, the default is for this to be true. For all
-other environment variables the default is false.
+other environment variables the default is false. If "dir" option
+is specified "exe" will always default to false.
+
+=item dir
+
+If true, only directories will be located in the search path. Default
+is false. "dir" and "exe" are not allowed to be true in the same
+call. (triggering a croak() on error).
 
 =item subdir
 
@@ -107,11 +118,6 @@ exists and is readable, else undef is returned.
 sub searchpath {
   my $file = shift;
 
-  # check for absolute file name and behave accordingly
-  if (File::Spec->file_name_is_absolute( $file )) {
-    return (_file_ok($file) ? $file : () );
-  }
-
   # read our arguments and assign defaults. Behaviour depends on whether
   # we have a single argument remaining or not.
   my %options;
@@ -124,6 +130,7 @@ sub searchpath {
     # along with the backwards compatibility behaviour
     %options = ( contents => shift,
 		 exe => 0,
+		 dir => 0,
 		 subdir => File::Spec->curdir,
 	       );
 
@@ -136,11 +143,21 @@ sub searchpath {
 
     %options = ( %defaults, @_ );
 
-    if (!exists $options{exe}) {
+    # if we specify a dir option then we default to no exe regardless
+    # of PATH
+    if (!exists $options{exe} && !exists $options{dir}) {
       # exe was not specified
       $options{exe} = ( $options{env} eq 'PATH' ? 1 : 0 );
     }
 
+    croak "Both exe and dir options were set in call to searchpath()"
+      if ($options{exe} && $options{dir});
+
+  }
+
+  # check for absolute file name and behave accordingly
+  if (File::Spec->file_name_is_absolute( $file )) {
+    return (_file_ok($file, $options{exe}, $options{dir}) ? $file : () );
   }
 
   # if exe is true we can simply use Env::Path directly. It doesn't
@@ -158,10 +175,15 @@ sub searchpath {
     $d = File::Spec->curdir unless $d;
 
     # Create the filename
-    my $testfile = File::Spec->catfile( $d, $options{subdir}, $file);
+    my $testfile;
+    if ($options{dir}) {
+      $testfile = File::Spec->catdir( $d, $options{subdir}, $file);
+    } else {
+      $testfile = File::Spec->catfile( $d, $options{subdir}, $file);
+    }
 
     # does the file exist?
-    next unless _file_ok( $testfile, $options{exe} );
+    next unless _file_ok( $testfile, $options{exe}, $options{dir} );
 
     # File looks to be found store it
     push(@matches, $testfile);
@@ -194,7 +216,7 @@ the list of directories to be searched.
 
 If Env::Path is installed, it is used since it understands a more
 varied set of path delimiters, otherwise the variable is split on
-colons.
+the value of $Config{path_sep}.
 
   @dirs = _env_to_dirs( 'PATH' );
 
@@ -224,12 +246,18 @@ sub _env_to_dirs {
     croak "Environment variable does exist but it is not defined. Unable to search it\n"
       unless defined $ENV{$var};
   }
-  eval { require Env::Path };
-  if ($@ || defined $contents) {
+  my $use_env_path;
+  {
+    # Localise $@ so that we can use this command from perldl shell
+    local $@;
+    eval { require Env::Path };
+    $use_env_path = ( $@ ? 0 : 1 );
+  }
+  if (!$use_env_path || defined $contents) {
     # no Env::Path so we just split on :
     my $path = (defined $contents? $contents : $ENV{$var});
-    return split(/:/, $path);
-
+    my $ps = $Config{path_sep};
+    return split(/$ps/, $path);
   } else {
     my $path = Env::Path->$var;
     return $path->List;
@@ -248,22 +276,31 @@ An optional argument can be used to add a test for exectuableness.
 
   $isthere_and_exe = _file_ok( $file, 1 );
 
+An additional optional argument can be used to add a test for
+directory as opposed to file existence.
+
+  $isthere_and_dir = _file_ok( $dir, 0, 1 );
+
 =cut
 
 sub _file_ok {
   my $testfile = shift;
   my $testexe = shift;
+  my $testdir = shift;
+
+  # do not allow both dir and exe flags
+  return 0 if ($testexe && $testdir);
 
   return unless -e $testfile;
-  return unless -f $testfile;
   return unless -r $testfile;
 
-  if ($testexe) {
-    return unless -x $testfile;
+  if ($testdir) {
+    return (-d $testfile);
+  } elsif ($testexe) {
+    return (-f $testfile && -x $testfile);
+  } else {
+    return (-f $testfile);
   }
-
-  # must be okay
-  return 1;
 }
 
 
