@@ -1,7 +1,8 @@
 README
 MANIFEST
-Makefile.PL
-SearchPath.pm
+MANIFEST.SKIP
+Build.PL
+lib/File/SearchPath.pm
 t/search.t
 t/a/file1
 t/a/file2
@@ -9,4 +10,4 @@ t/b/file2
 t/b/file3
 t/c/file4
 ChangeLog
-META.yml                                 Module meta-data (added by MakeMaker)
+META.yml
